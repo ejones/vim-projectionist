@@ -380,6 +380,35 @@ function! projectionist#query_file(key, ...) abort
   return s:uniq(files)
 endfunction
 
+let g:projectionist_max_file_recursion = 6
+
+function! projectionist#query_file_recursive(key, ...) abort
+  let start_file = get(a:0 ? a:1 : {}, 'file', get(b:, 'projectionist_file', expand('%:p')))
+  let files = []
+  let visited_files = {start_file: 1}
+  let current_files = [start_file]
+  let depth = 0
+  while !empty(current_files) && depth < g:projectionist_max_file_recursion 
+    let next_files = []
+    for file in current_files
+      let query_opts = extend(a:0 ? copy(a:1) : {}, {'file': file})
+      let [root, match] = get(projectionist#query(a:key, query_opts), 0, ['', []])
+      let subfiles = type(match) == type([]) ? copy(match) : [match]
+      call map(filter(subfiles, 'len(v:val)'), 's:absolute(v:val, root)')
+      for subfile in subfiles
+        if !has_key(visited_files, subfile)
+          let visited_files[subfile] = 1
+          call add(files, subfile)
+          call add(next_files, subfile)
+        endif
+      endfor
+    endfor
+    let current_files = next_files
+    let depth += 1
+  endwhile
+  return files
+endfunction
+
 function! s:shelljoin(val) abort
   return substitute(s:join(a:val), '["'']\([{}]\)["'']', '\1', 'g')
 endfunction
@@ -600,6 +629,7 @@ function! s:open_projection(mods, edit, variants, ...) abort
     call add(formats, variant[0] . projectionist#slash() . (variant[1] =~# '\*\*'
           \ ? variant[1] : substitute(variant[1], '\*', '**/*', '')))
   endfor
+  let patterns = copy(formats)
   let cmd = s:parse(a:mods, a:000)
   if get(cmd.args, -1, '') ==# '`=`'
     let s:last_formats = formats
@@ -613,6 +643,16 @@ function! s:open_projection(mods, edit, variants, ...) abort
     call map(formats, 'substitute(substitute(v:val, "\\*\\*\\([\\/]\\=\\)", empty(dir) ? "" : dir . "\\1", ""), "\\*", base, "")')
   else
     call filter(formats, 'v:val !~# "\\*"')
+  endif
+  if empty(formats)
+    for alternate in projectionist#query_file_recursive('alternate', {'lnum': 0})
+      for pattern in patterns
+        if !empty(s:match(alternate, pattern))
+          call add(formats, alternate)
+          break
+        endif
+      endfor
+    endfor
   endif
   if empty(formats)
     return 'echoerr "Invalid number of arguments"'
