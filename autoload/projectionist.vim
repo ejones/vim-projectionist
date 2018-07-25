@@ -380,35 +380,6 @@ function! projectionist#query_file(key, ...) abort
   return s:uniq(files)
 endfunction
 
-let g:projectionist_max_file_recursion = 6
-
-function! projectionist#query_file_recursive(key, ...) abort
-  let start_file = get(a:0 ? a:1 : {}, 'file', get(b:, 'projectionist_file', expand('%:p')))
-  let files = []
-  let visited_files = {start_file: 1}
-  let current_files = [start_file]
-  let depth = 0
-  while !empty(current_files) && depth < g:projectionist_max_file_recursion 
-    let next_files = []
-    for file in current_files
-      let query_opts = extend(a:0 ? copy(a:1) : {}, {'file': file})
-      let [root, match] = get(projectionist#query(a:key, query_opts), 0, ['', []])
-      let subfiles = type(match) == type([]) ? copy(match) : [match]
-      call map(filter(subfiles, 'len(v:val)'), 's:absolute(v:val, root)')
-      for subfile in subfiles
-        if !has_key(visited_files, subfile)
-          let visited_files[subfile] = 1
-          call add(files, subfile)
-          call add(next_files, subfile)
-        endif
-      endfor
-    endfor
-    let current_files = next_files
-    let depth += 1
-  endwhile
-  return files
-endfunction
-
 function! s:shelljoin(val) abort
   return substitute(s:join(a:val), '["'']\([{}]\)["'']', '\1', 'g')
 endfunction
@@ -460,7 +431,7 @@ function! projectionist#define_navigation_command(command, patterns) abort
   for [prefix, excmd] in items(s:prefixes)
     execute 'command! -buffer -bar -bang -nargs=* -complete=customlist,s:projection_complete'
           \ prefix . substitute(a:command, '\A', '', 'g')
-          \ ':execute s:open_projection("<mods>", "'.excmd.'<bang>",'.string(a:patterns).',<f-args>)'
+          \ ':execute s:open_projection("<mods>", "'.excmd.'<bang>",'.string(a:command).','.string(a:patterns).',<f-args>)'
   endfor
 endfunction
 
@@ -623,36 +594,74 @@ function! projectionist#navigation_commands() abort
   return commands
 endfunction
 
-function! s:open_projection(mods, edit, variants, ...) abort
+function! s:build_projection_formats(command_variants) abort
   let formats = []
-  for variant in a:variants
+  for variant in a:command_variants
     call add(formats, variant[0] . projectionist#slash() . (variant[1] =~# '\*\*'
           \ ? variant[1] : substitute(variant[1], '\*', '**/*', '')))
   endfor
-  let patterns = copy(formats)
+  return formats
+endfunction
+
+function! s:expand_projection_formats(formats, name) abort
+  let paths = copy(a:formats)
+  call filter(paths, 'v:val =~# "\\*"')
+  let dir = matchstr(a:name, '.*\ze/')
+  let base = matchstr(a:name, '[^\/]*$')
+  call map(paths, 'substitute(substitute(v:val, "\\*\\*\\([\\/]\\=\\)", empty(dir) ? "" : dir . "\\1", ""), "\\*", base, "")')
+  return paths
+endfunction
+
+let g:projectionist_max_file_recursion = 6
+
+function! projectionist#find_related_files(target_type, ...) abort
+  let start_file = get(a:0 ? a:1 : {}, 'file', get(b:, 'projectionist_file', expand('%:p')))
+  let commands = projectionist#navigation_commands()
+  let files = []
+  let visited_files = {start_file: 1}
+  let current_files = [start_file]
+  let depth = 0
+  while !empty(current_files) && depth < g:projectionist_max_file_recursion 
+    let next_files = []
+    for file in current_files
+      let query_opts = extend(a:0 ? copy(a:1) : {}, {'file': file})
+      let [root, related] = get(projectionist#query('related', query_opts), 0, ['', {}])
+      for [type, name] in items(related)
+        if has_key(commands, type)
+          let formats = s:build_projection_formats(commands[type])
+          for related_file in s:expand_projection_formats(formats, name)
+            if !has_key(visited_files, related_file)
+              let visited_files[related_file] = 1
+              call add(next_files, related_file)
+              if type ==# a:target_type
+                call add(files, related_file)
+              endif
+            endif
+          endfor
+        endif
+      endfor
+    endfor
+    let current_files = next_files
+    let depth += 1
+  endwhile
+  return files
+endfunction
+
+function! s:open_projection(mods, edit, type, variants, ...) abort
+  let formats = s:build_projection_formats(a:variants)
   let cmd = s:parse(a:mods, a:000)
   if get(cmd.args, -1, '') ==# '`=`'
     let s:last_formats = formats
     return ''
   endif
   if len(cmd.args)
-    call filter(formats, 'v:val =~# "\\*"')
     let name = join(cmd.args, ' ')
-    let dir = matchstr(name, '.*\ze/')
-    let base = matchstr(name, '[^\/]*$')
-    call map(formats, 'substitute(substitute(v:val, "\\*\\*\\([\\/]\\=\\)", empty(dir) ? "" : dir . "\\1", ""), "\\*", base, "")')
+    let formats = s:expand_projection_formats(formats, name)
   else
     call filter(formats, 'v:val !~# "\\*"')
-  endif
-  if empty(formats)
-    for alternate in projectionist#query_file_recursive('alternate', {'lnum': 0})
-      for pattern in patterns
-        if !empty(s:match(alternate, pattern))
-          call add(formats, alternate)
-          break
-        endif
-      endfor
-    endfor
+    if empty(formats)
+      let formats = projectionist#find_related_files(a:type)
+    endif
   endif
   if empty(formats)
     return 'echoerr "Invalid number of arguments"'
