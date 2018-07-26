@@ -62,9 +62,7 @@ The full list of available properties in a projection is as follows:
 						*projectionist-alternate*
 "alternate" ~
         Determines the destination of the |projectionist-:A| command.  If this
-        is a list, the first readable file will be used.  In addition, when a
-        navigation command is called without an argument, it will search
-        alternates recursively to edit a related file of the given type.
+        is a list, the first readable file will be used.
 						*projectionist-console*
 "console" ~
         Command to run to start a REPL or other interactive shell.  Will be
